@@ -1,0 +1,981 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Livraria API",
+    "version": "1.0.0",
+    "description": "API RESTful de Livros e Autores protegida por **BCrypt**, **JWT** e **RBAC**.\n\n## Como testar as rotas protegidas\n1. Abra `POST /api/v1/auth/login`, clique em **Try it out** e envie as credenciais de um dos perfis abaixo.\n2. Copie o valor do campo `token` da resposta.\n3. Clique no botão **Authorize** (cadeado no topo), cole o token **sem** o prefixo `Bearer` e confirme.\n4. A partir daí, toda requisição envia `Authorization: Bearer <token>` automaticamente.\n\n> Atalho: nesta interface, um login bem-sucedido já preenche o **Authorize** sozinho.\n> Para trocar de perfil, use **Authorize → Logout** e faça login com a outra conta.\n\n| Perfil | E-mail | Senha |\n|---|---|---|\n| ADMIN | `admin@livraria.com` | `admin123` |\n| USER | `leitor@gmail.com` | `leitor123` |\n\n## Matriz de permissões\n| Rota | Acesso |\n|---|---|\n| `GET /livros`, `GET /livros/{id}`, `GET /autores` | Público |\n| `POST /auth/register`, `POST /auth/login` | Público |\n| `POST /livros/{id}/comentarios` | Autenticado (USER ou ADMIN) |\n| `POST /autores`, `POST /livros` | Exclusivo ADMIN |\n\n## Convenção de erros\nToda resposta de erro tem o formato `{ \"erro\": \"mensagem\" }`.\n- **400** — corpo malformado, campo obrigatório ausente ou tipo inválido.\n- **401** — token ausente, malformado, adulterado ou expirado (*não sei quem você é*).\n- **403** — token válido, mas o perfil não tem permissão (*sei quem você é, mas não pode*).\n- **404** — recurso indicado na URL não existe.\n- **409** — conflito com dado existente (e-mail já cadastrado).\n- **422** — dados bem formados, porém semanticamente inválidos (ex.: `autor_id` inexistente)."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Servidor atual"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Autenticação",
+      "description": "Cadastro de usuários e emissão de tokens JWT"
+    },
+    {
+      "name": "Livros",
+      "description": "Catálogo público, cadastro (ADMIN) e comentários (autenticados)"
+    },
+    {
+      "name": "Autores",
+      "description": "Consulta pública e cadastro de autores (ADMIN)"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Token JWT obtido em `POST /api/v1/auth/login`. Cole apenas o token; o prefixo `Bearer` é adicionado automaticamente. Validade padrão: 1 hora."
+      }
+    },
+    "parameters": {
+      "LivroId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Identificador numérico do livro.",
+        "schema": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        },
+        "example": 1
+      }
+    },
+    "schemas": {
+      "Erro": {
+        "type": "object",
+        "required": [
+          "erro"
+        ],
+        "properties": {
+          "erro": {
+            "type": "string",
+            "description": "Mensagem legível descrevendo a falha.",
+            "example": "Livro não localizado."
+          }
+        }
+      },
+      "RegistroRequest": {
+        "type": "object",
+        "required": [
+          "nome",
+          "email",
+          "senha"
+        ],
+        "properties": {
+          "nome": {
+            "type": "string",
+            "minLength": 1,
+            "example": "Ana Souza"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Normalizado para minúsculas.",
+            "example": "ana.souza@email.com"
+          },
+          "senha": {
+            "type": "string",
+            "format": "password",
+            "minLength": 8,
+            "maxLength": 72,
+            "description": "Mínimo de 8 caracteres e máximo de 72 bytes (limite do BCrypt).",
+            "example": "Senha@Forte2026"
+          }
+        }
+      },
+      "Usuario": {
+        "type": "object",
+        "required": [
+          "id",
+          "nome",
+          "email",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1792000000000
+          },
+          "nome": {
+            "type": "string",
+            "example": "Ana Souza"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "ana.souza@email.com"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "ADMIN"
+            ],
+            "description": "Todo cadastro público recebe USER.",
+            "example": "USER"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "senha"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "admin@livraria.com"
+          },
+          "senha": {
+            "type": "string",
+            "format": "password",
+            "example": "admin123"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "usuario",
+          "token",
+          "tipo",
+          "expira_em"
+        ],
+        "properties": {
+          "usuario": {
+            "type": "object",
+            "required": [
+              "id",
+              "nome",
+              "role"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64",
+                "example": 1
+              },
+              "nome": {
+                "type": "string",
+                "example": "Admin"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "USER",
+                  "ADMIN"
+                ],
+                "example": "ADMIN"
+              }
+            }
+          },
+          "token": {
+            "type": "string",
+            "description": "JWT assinado com HS256. Enviar em `Authorization: Bearer <token>`.",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub21lIjoiQWRtaW4iLCJyb2xlIjoiQURNSU4ifQ.assinatura"
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ],
+            "example": "Bearer"
+          },
+          "expira_em": {
+            "type": "string",
+            "description": "Validade do token.",
+            "example": "1h"
+          }
+        }
+      },
+      "NovoAutor": {
+        "type": "object",
+        "required": [
+          "nome"
+        ],
+        "properties": {
+          "nome": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "example": "Clarice Lispector"
+          },
+          "nacionalidade": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Opcional. Padrão: \"Não informada\".",
+            "example": "Brasileira"
+          }
+        }
+      },
+      "Autor": {
+        "type": "object",
+        "required": [
+          "id",
+          "nome",
+          "nacionalidade"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "nome": {
+            "type": "string",
+            "example": "Machado de Assis"
+          },
+          "nacionalidade": {
+            "type": "string",
+            "example": "Brasileiro"
+          }
+        }
+      },
+      "NovoLivro": {
+        "type": "object",
+        "required": [
+          "titulo",
+          "autor_id"
+        ],
+        "properties": {
+          "titulo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "example": "Memórias Póstumas de Brás Cubas"
+          },
+          "ano": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Opcional; não pode ser futuro. Padrão: ano corrente.",
+            "example": 1881
+          },
+          "autor_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Deve referenciar um autor existente.",
+            "example": 1
+          }
+        }
+      },
+      "Comentario": {
+        "type": "object",
+        "required": [
+          "id",
+          "usuario_id",
+          "autor_nome",
+          "texto"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1792000000000
+          },
+          "usuario_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Extraído do token, nunca do corpo.",
+            "example": 2
+          },
+          "autor_nome": {
+            "type": "string",
+            "description": "Nome do usuário autenticado.",
+            "example": "Leitor"
+          },
+          "texto": {
+            "type": "string",
+            "example": "Narrativa ambígua e genial. Capitu traiu ou não traiu?"
+          }
+        }
+      },
+      "LivroCriado": {
+        "type": "object",
+        "required": [
+          "id",
+          "titulo",
+          "ano",
+          "autor_id",
+          "comentarios"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1792000000000
+          },
+          "titulo": {
+            "type": "string",
+            "example": "Memórias Póstumas de Brás Cubas"
+          },
+          "ano": {
+            "type": "integer",
+            "example": 1881
+          },
+          "autor_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "comentarios": {
+            "type": "array",
+            "maxItems": 0,
+            "items": {
+              "$ref": "#/components/schemas/Comentario"
+            },
+            "example": []
+          }
+        }
+      },
+      "Livro": {
+        "type": "object",
+        "required": [
+          "id",
+          "titulo",
+          "ano",
+          "autor_id",
+          "autor_nome",
+          "comentarios"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "titulo": {
+            "type": "string",
+            "example": "Dom Casmurro"
+          },
+          "ano": {
+            "type": "integer",
+            "example": 1899
+          },
+          "autor_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "autor_nome": {
+            "type": "string",
+            "description": "\"Autor Desconhecido\" se o autor não existir mais.",
+            "example": "Machado de Assis"
+          },
+          "comentarios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Comentario"
+            }
+          }
+        }
+      },
+      "NovoComentario": {
+        "type": "object",
+        "required": [
+          "texto"
+        ],
+        "properties": {
+          "texto": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "example": "Narrativa ambígua e genial. Capitu traiu ou não traiu?"
+          }
+        }
+      }
+    },
+    "responses": {
+      "NaoAutenticado": {
+        "description": "Token ausente, malformado, adulterado ou expirado.",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "Desafio de autenticação (RFC 6750).",
+            "schema": {
+              "type": "string",
+              "example": "Bearer error=\"invalid_token\""
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            },
+            "examples": {
+              "ausente": {
+                "summary": "Sem cabeçalho Authorization",
+                "value": {
+                  "erro": "Token de autenticação não fornecido."
+                }
+              },
+              "formato": {
+                "summary": "Cabeçalho sem o prefixo Bearer",
+                "value": {
+                  "erro": "Formato inválido. Use: Authorization: Bearer <token>."
+                }
+              },
+              "invalido": {
+                "summary": "Assinatura inválida ou token adulterado",
+                "value": {
+                  "erro": "Token inválido."
+                }
+              },
+              "expirado": {
+                "summary": "Token expirado",
+                "value": {
+                  "erro": "Token expirado. Faça login novamente."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ProibidoAdmin": {
+        "description": "Token válido, mas o perfil do usuário não é ADMIN.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            },
+            "example": {
+              "erro": "Acesso proibido: privilégio de ADMIN exigido."
+            }
+          }
+        }
+      },
+      "LivroNaoEncontrado": {
+        "description": "Não existe livro com o id informado.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            },
+            "example": {
+              "erro": "Livro não localizado."
+            }
+          }
+        }
+      },
+      "ErroInterno": {
+        "description": "Falha inesperada no servidor. Detalhes internos não são expostos.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            },
+            "example": {
+              "erro": "Ocorreu um erro interno no servidor."
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/livros": {
+      "get": {
+        "tags": [
+          "Livros"
+        ],
+        "summary": "Lista todos os livros do catálogo",
+        "description": "Rota **pública**. Retorna todos os livros com o nome do autor (`autor_nome`)\ne os comentários já publicados. Não exige token.\n",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Catálogo completo (pode ser uma lista vazia).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Livro"
+                  }
+                },
+                "example": [
+                  {
+                    "id": 1,
+                    "titulo": "Dom Casmurro",
+                    "ano": 1899,
+                    "autor_id": 1,
+                    "autor_nome": "Machado de Assis",
+                    "comentarios": [
+                      {
+                        "id": 1,
+                        "usuario_id": 2,
+                        "autor_nome": "Leitor",
+                        "texto": "Clássico indispensável."
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Livros"
+        ],
+        "summary": "Cadastra um novo livro (exclusivo ADMIN)",
+        "description": "Rota **restrita ao perfil ADMIN**. Exige `Authorization: Bearer <token>`.\n\nRegras de validação:\n- `titulo`: obrigatório, texto de 1 a 200 caracteres.\n- `autor_id`: obrigatório, inteiro positivo que referencie um autor existente.\n- `ano`: opcional, inteiro entre 1 e o ano corrente; se omitido, assume o ano corrente.\n\nStrings numéricas (`\"1881\"`) são aceitas em `ano` e `autor_id` por compatibilidade com formulários HTML.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NovoLivro"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Livro criado; nasce sem comentários.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivroCriado"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Corpo malformado, campo obrigatório ausente ou tipo inválido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "examples": {
+                  "semTitulo": {
+                    "summary": "Título ausente ou vazio",
+                    "value": {
+                      "erro": "O campo titulo é obrigatório e deve ser um texto não vazio."
+                    }
+                  },
+                  "autorIdInvalido": {
+                    "summary": "autor_id ausente ou não inteiro",
+                    "value": {
+                      "erro": "O campo autor_id é obrigatório e deve ser um inteiro positivo."
+                    }
+                  },
+                  "anoInvalido": {
+                    "summary": "Ano não inteiro ou no futuro",
+                    "value": {
+                      "erro": "O campo ano deve ser um inteiro entre 1 e 2026."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/ProibidoAdmin"
+          },
+          "422": {
+            "description": "Dados bem formados, mas o `autor_id` não corresponde a nenhum autor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "example": {
+                  "erro": "O autor informado (autor_id) não existe."
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/api/v1/livros/{id}": {
+      "get": {
+        "tags": [
+          "Livros"
+        ],
+        "summary": "Detalha um livro pelo identificador",
+        "description": "Rota **pública**. Retorna o livro, o nome do autor e seus comentários.",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LivroId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Livro encontrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Livro"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/LivroNaoEncontrado"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/api/v1/livros/{id}/comentarios": {
+      "post": {
+        "tags": [
+          "Livros"
+        ],
+        "summary": "Publica um comentário em um livro (USER ou ADMIN)",
+        "description": "Rota **restrita a usuários autenticados**, de qualquer perfil. Exige `Authorization: Bearer <token>`.\n\nA autoria (`usuario_id` e `autor_nome`) é extraída do token validado; o cliente não consegue\ncomentar em nome de outra pessoa. O texto deve ter entre 1 e 1000 caracteres.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LivroId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NovoComentario"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Comentário publicado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comentario"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Texto ausente, vazio, não textual ou acima de 1000 caracteres.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "examples": {
+                  "vazio": {
+                    "summary": "Texto ausente ou vazio",
+                    "value": {
+                      "erro": "O texto do comentário não pode estar vazio."
+                    }
+                  },
+                  "longo": {
+                    "summary": "Texto acima do limite",
+                    "value": {
+                      "erro": "O comentário deve ter no máximo 1000 caracteres."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "404": {
+            "$ref": "#/components/responses/LivroNaoEncontrado"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/api/v1/autores": {
+      "get": {
+        "tags": [
+          "Autores"
+        ],
+        "summary": "Lista todos os autores",
+        "description": "Rota **pública**. Útil para descobrir o `autor_id` antes de cadastrar um livro.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Lista de autores.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Autor"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Autores"
+        ],
+        "summary": "Cadastra um novo autor (exclusivo ADMIN)",
+        "description": "Rota **restrita ao perfil ADMIN**. Exige `Authorization: Bearer <token>`.\n\n- `nome`: obrigatório, texto de 1 a 120 caracteres.\n- `nacionalidade`: opcional, até 60 caracteres; se omitida, assume \"Não informada\".\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NovoAutor"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Autor criado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Autor"
+                },
+                "example": {
+                  "id": 1792000000000,
+                  "nome": "Clarice Lispector",
+                  "nacionalidade": "Brasileira"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Nome ausente, vazio ou longo demais; nacionalidade com tipo ou tamanho inválido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "examples": {
+                  "semNome": {
+                    "summary": "Nome ausente",
+                    "value": {
+                      "erro": "O nome do autor é obrigatório."
+                    }
+                  },
+                  "nacionalidadeInvalida": {
+                    "summary": "Nacionalidade inválida",
+                    "value": {
+                      "erro": "O campo nacionalidade deve ser um texto de até 60 caracteres."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/ProibidoAdmin"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "tags": [
+          "Autenticação"
+        ],
+        "summary": "Cadastra um novo usuário leitor",
+        "description": "Rota **pública**. Cria uma conta com perfil `USER`.\n\n- A senha é armazenada como hash **BCrypt** (salt aleatório + work factor 12); nunca em texto puro.\n- O e-mail é normalizado para minúsculas antes da verificação de duplicidade.\n- Um campo `role` enviado no corpo é **ignorado**: não é possível se cadastrar como ADMIN.\n- A resposta nunca inclui a senha nem o hash.\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistroRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Usuário criado com perfil USER.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usuario"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Dados inválidos (campo ausente, tipo incorreto, e-mail malformado ou senha fora do tamanho).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "examples": {
+                  "camposAusentes": {
+                    "summary": "Campo obrigatório ausente",
+                    "value": {
+                      "erro": "Campos obrigatórios ausentes: nome, email ou senha."
+                    }
+                  },
+                  "emailInvalido": {
+                    "summary": "E-mail malformado",
+                    "value": {
+                      "erro": "E-mail em formato inválido."
+                    }
+                  },
+                  "senhaCurta": {
+                    "summary": "Senha com menos de 8 caracteres",
+                    "value": {
+                      "erro": "A senha deve ter no mínimo 8 caracteres."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "E-mail já cadastrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "example": {
+                  "erro": "E-mail já cadastrado no sistema."
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Autenticação"
+        ],
+        "summary": "Autentica o usuário e emite um token JWT",
+        "description": "Rota **pública**. Confere a senha com `bcrypt.compare` e, se válida, devolve um **JWT**\n(HS256, validade de 1 hora) contendo o id (`sub`), o nome e o perfil (`role`).\n\nUse o `token` retornado no botão **Authorize** para testar as rotas protegidas.\n\nPor segurança, a mensagem de falha é a mesma para e-mail inexistente e senha incorreta,\ne o tempo de resposta é equivalente nos dois casos (evita enumeração de usuários).\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              },
+              "examples": {
+                "admin": {
+                  "summary": "Administrador (pode cadastrar autores e livros)",
+                  "value": {
+                    "email": "admin@livraria.com",
+                    "senha": "admin123"
+                  }
+                },
+                "leitor": {
+                  "summary": "Leitor (pode apenas comentar)",
+                  "value": {
+                    "email": "leitor@gmail.com",
+                    "senha": "leitor123"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Credenciais válidas; token emitido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "E-mail ou senha ausentes, ou enviados com tipo diferente de string.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "example": {
+                  "erro": "E-mail e senha são obrigatórios."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "E-mail inexistente ou senha incorreta (mensagem propositalmente genérica).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Erro"
+                },
+                "example": {
+                  "erro": "Credenciais inválidas."
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    }
+  }
+}

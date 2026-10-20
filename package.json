@@ -1,11 +1,14 @@
 {
   "name": "livraria-api",
   "version": "1.0.0",
-  "description": "API de Livraria com BCrypt, JWT e RBAC",
+  "description": "API de Livraria com BCrypt, JWT, RBAC e documentação OpenAPI 3.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "gerar-segredo": "node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\""
+    "test": "node --test test/contrato.test.js",
+    "docs:validar": "node scripts/validar-openapi.js",
+    "gerar-segredo": "node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\"",
+    "docs:exportar": "node scripts/exportar-openapi.js"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +19,16 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  },
+  "overrides": {
+    "swagger-ui-dist": "5.33.1"
   }
 }
